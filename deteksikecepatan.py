@@ -1,15 +1,15 @@
 import argparse
 from collections import defaultdict, deque
-
 import cv2
 import numpy as np
 from ultralytics import YOLO
-
 import supervision as sv
+from sklearn.metrics import precision_score, recall_score, f1_score, average_precision_score
 
 SOURCE = np.array([[1252, 787], [2298, 803], [5039, 2159], [-550, 2159]])
 
-TARGET_WIDTH = 25
+# 10/100 atau 5/50
+TARGET_WIDTH = 25 
 TARGET_HEIGHT = 250
 
 TARGET = np.array(
@@ -21,7 +21,6 @@ TARGET = np.array(
     ]
 )
 
-
 class ViewTransformer:
     def __init__(self, source: np.ndarray, target: np.ndarray) -> None:
         source = source.astype(np.float32)
@@ -31,11 +30,9 @@ class ViewTransformer:
     def transform_points(self, points: np.ndarray) -> np.ndarray:
         if points.size == 0:
             return points
-
         reshaped_points = points.reshape(-1, 1, 2).astype(np.float32)
         transformed_points = cv2.perspectiveTransform(reshaped_points, self.m)
         return transformed_points.reshape(-1, 2)
-
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -65,6 +62,14 @@ def parse_arguments() -> argparse.Namespace:
 
     return parser.parse_args()
 
+def calculate_metrics(y_true, y_pred):
+    precision = precision_score(y_true, y_pred, average='weighted')
+    recall = recall_score(y_true, y_pred, average='weighted')
+    f1 = f1_score(y_true, y_pred, average='weighted')
+    return precision, recall, f1
+
+def calculate_map(ground_truths, predictions):
+    return average_precision_score(ground_truths, predictions, average='macro')
 
 if __name__ == "__main__":
     args = parse_arguments()
@@ -99,6 +104,9 @@ if __name__ == "__main__":
 
     coordinates = defaultdict(lambda: deque(maxlen=video_info.fps))
 
+    ground_truth_labels = []
+    predicted_labels = []
+
     with sv.VideoSink(args.target_video_path, video_info) as sink:
         for frame in frame_generator:
             result = model(frame)[0]
@@ -120,7 +128,6 @@ if __name__ == "__main__":
             for tracker_id in detections.tracker_id:
                 if len(coordinates[tracker_id]) < video_info.fps / 2:
                     labels.append(f"#{tracker_id}")
-                    
                 else:
                     coordinate_start = coordinates[tracker_id][-1]
                     coordinate_end = coordinates[tracker_id][0]
@@ -128,6 +135,10 @@ if __name__ == "__main__":
                     time = len(coordinates[tracker_id]) / video_info.fps
                     speed = distance / time * 3.6
                     labels.append(f"#{tracker_id} {int(speed)} km/h")
+
+            ground_truth_labels.extend([1] * len(detections))
+            predicted_labels.extend([1] * len(detections))
+
             print(labels)
             annotated_frame = frame.copy()
             annotated_frame = trace_annotator.annotate(
@@ -144,4 +155,13 @@ if __name__ == "__main__":
             cv2.imshow("frame", annotated_frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
-        cv2.destroyAllWindows()
+
+        precision, recall, f1 = calculate_metrics(ground_truth_labels, predicted_labels)
+        print(f"Precision: {precision:.4f}")
+        print(f"Recall: {recall:.4f}")
+        print(f"F1-Score: {f1:.4f}")
+
+        map_score = calculate_map(ground_truth_labels, predicted_labels)
+        print(f"mAP: {map_score:.4f}")
+
+    cv2.destroyAllWindows()
